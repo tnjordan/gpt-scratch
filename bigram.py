@@ -154,7 +154,7 @@ class BigramLanguageModel(nn.Module):
         # x = self.sa_heads(x)
         # x = self.ffwd(x)
         x = self.blocks(x)
-        logits = self.lm_head(tok_emb)
+        logits = self.lm_head(x)
 
         if targets is None:
             loss = None
