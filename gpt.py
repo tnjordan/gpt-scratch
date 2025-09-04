@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import os
 
 # hyperparameters
 batch_size = 64  # how many independent sequences will we process in parallel?
@@ -206,32 +207,65 @@ class GPTLanguageModel(nn.Module):
         return idx
 
 
-model = GPTLanguageModel()
-m = model.to(device)
-# print the number of parameters in the model
-print(sum(p.numel() for p in m.parameters()) / 1e6, "M parameters")
+def build_model(device=device):
+    """Create and return a model moved to `device`. Does not start training."""
+    model = GPTLanguageModel()
+    return model.to(device)
 
-# create a PyTorch optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-for iter in range(max_iters):
+def _count_params_millions(m):
+    return sum(p.numel() for p in m.parameters()) / 1e6
 
-    # every once in a while evaluate the loss on train and val sets
-    if iter % eval_interval == 0 or iter == max_iters - 1:
-        losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-    # sample a batch of data
-    xb, yb = get_batch("train")
+def save_checkpoint(model, optimizer, iter, ckpt_path="ckpt.pth"):
+    torch.save(
+        {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "iter": iter}, ckpt_path
+    )
 
-    # evaluate the loss
-    logits, loss = model(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
 
-# generate from the model
-context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
-# open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))
-# %%
+if __name__ == "__main__":
+    # create model/optimizer and run training only when the file is executed directly
+    model = GPTLanguageModel()
+    m = model.to(device)
+    # print the number of parameters in the model
+    print(_count_params_millions(m), "M parameters")
+
+    # create a PyTorch optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+
+    # optionally resume from checkpoint
+    ckpt_path = "ckpt.pth"
+    start_iter = 0
+    if os.path.exists(ckpt_path):
+        ckpt = torch.load(ckpt_path, map_location=device)
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        start_iter = ckpt.get("iter", 0) + 1
+        print(f"Resuming from checkpoint at iter {start_iter}")
+
+    for iter in range(start_iter, max_iters):
+
+        # every once in a while evaluate the loss on train and val sets
+        # always evaluate at eval_interval and optionally at the final iteration
+        if iter % eval_interval == 0 or iter == max_iters - 1:
+            losses = estimate_loss()
+            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        # only save checkpoints every eval_interval (do not save unconditionally at the final iter)
+        if iter % eval_interval == 0:
+            save_checkpoint(model, optimizer, iter, ckpt_path)
+
+        # sample a batch of data
+        xb, yb = get_batch("train")
+
+        # evaluate the loss
+        logits, loss = model(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+
+    # save final checkpoint before generation
+    save_checkpoint(model, optimizer, max_iters - 1, ckpt_path)
+
+    # generate from the model
+    context = torch.zeros((1, 1), dtype=torch.long, device=device)
+    print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
